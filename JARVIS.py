@@ -79,6 +79,8 @@ _ui_netmap = importlib.import_module("jarvis_modules.ui_netmap")
 _ui_osint_tabs = importlib.import_module("jarvis_modules.ui_osint_tabs")
 _ui_osint_tools_tabs = importlib.import_module("jarvis_modules.ui_osint_tools_tabs")
 _osint_runtime_helpers = importlib.import_module("jarvis_modules.osint_runtime_helpers")
+OSINTConsole = importlib.import_module("jarvis_modules.osint_console").OSINTConsole
+quick_osint = importlib.import_module("jarvis_modules.osint_console").quick_osint
 
 try:
     import tkinter as tk
