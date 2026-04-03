@@ -52,6 +52,7 @@ def osint_open_panel(app: Any) -> None:
     app._build_osint_generic_tab(tab("◈ Domaine"), "Domaine (ex: example.com)", lambda d, out: app._osint_run_domain(d, out))
     app._build_osint_generic_tab(tab("◈ Username"), "Nom d'utilisateur", lambda u, out: app._osint_run_username(u, out))
     app._build_osint_generic_tab(tab("◈ Email"), "Adresse email", lambda e, out: app._osint_run_email(e, out))
+    app._build_osint_network_observer_tab(tab("◈ Network Observer"))
     app._build_osint_cred_research_tab(tab("◈ Cred Research"))
     app._build_osint_port_tab(tab("◈ Port Scanner"))
     app._build_osint_generic_tab(tab("◈ Subdomains"), "Domaine racine (ex: example.com)", lambda d, out: app._osint_run_subdomain(d, out))
@@ -153,6 +154,162 @@ def build_osint_generic_tab(app: Any, parent: Any, label: str, run_func: Any) ->
     btn.pack(side="left", padx=(8, 0))
     app._add_osint_export_buttons(top, out)
     entry.bind("<Return>", lambda _e: launch())
+
+
+def build_osint_network_observer_tab(app: Any, parent: Any) -> None:
+    top = tk.Frame(parent, bg="#010810")
+    top.pack(fill="x", padx=10, pady=10)
+
+    tk.Label(
+        top,
+        text="Mode defensif local (sans interception): snapshot, watch diff, baseline, scoring, liste blanche/noire.",
+        bg="#010810",
+        fg="#00d9ff",
+        font=("Consolas", 9, "bold"),
+        anchor="w",
+    ).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
+
+    tk.Label(top, text="Target", bg="#010810", fg="#7ee2ff", font=("Consolas", 9, "bold")).grid(row=1, column=0, sticky="w")
+    target_entry = tk.Entry(top, bg="#020f1c", fg="#d6f5ff", font=("Consolas", 10), insertbackground="#00e5ff")
+    target_entry.insert(0, "local")
+    target_entry.grid(row=1, column=1, sticky="ew", padx=(4, 8))
+
+    tk.Label(top, text="Interval (s)", bg="#010810", fg="#7ee2ff", font=("Consolas", 9, "bold")).grid(row=1, column=2, sticky="w")
+    interval_entry = tk.Entry(top, width=6, bg="#020f1c", fg="#d6f5ff", font=("Consolas", 10), insertbackground="#00e5ff")
+    interval_entry.insert(0, "5")
+    interval_entry.grid(row=1, column=3, sticky="w", padx=(4, 8))
+
+    tk.Label(top, text="IP list", bg="#010810", fg="#7ee2ff", font=("Consolas", 9, "bold")).grid(row=1, column=4, sticky="w")
+    list_entry = tk.Entry(top, bg="#020f1c", fg="#d6f5ff", font=("Consolas", 10), insertbackground="#00e5ff")
+    list_entry.grid(row=1, column=5, columnspan=3, sticky="ew", padx=(4, 0))
+
+    out = tk.Text(
+        parent,
+        bg="#010810",
+        fg="#00ff88",
+        font=("Consolas", 10),
+        relief="flat",
+        bd=0,
+        highlightthickness=1,
+        highlightbackground="#005f7a",
+        wrap="word",
+        padx=12,
+        pady=10,
+    )
+    out.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+    app._configure_osint_output_widget(out)
+
+    for col in range(8):
+        top.grid_columnconfigure(col, weight=1 if col in (1, 5, 6, 7) else 0)
+
+    alerts_var = tk.BooleanVar(value=bool(app._network_observer_state.get("alerts_popup", True)))
+
+    def _target() -> str:
+        return target_entry.get().strip() or "local"
+
+    def _interval() -> int:
+        try:
+            return max(2, int(interval_entry.get().strip() or "5"))
+        except Exception:
+            return 5
+
+    def _split_ip_list() -> list[str]:
+        raw = list_entry.get().strip()
+        if not raw:
+            return []
+        items = [x.strip() for x in re.split(r"[,;\s]+", raw) if x.strip()]
+        return items[:50]
+
+    def launch_snapshot() -> None:
+        target = _target()
+        app._osint_start_output(out, "Network Observer", target, f"◈ NETWORK OBSERVER → {target}")
+        threading.Thread(target=app._osint_run_network_observer, args=(target, out), daemon=True).start()
+
+    def start_watch() -> None:
+        target = _target()
+        app._osint_start_output(out, "Network Observer", target, f"◈ NETWORK WATCH → {target}")
+        app._network_observer_set_watch_state(True, out=out, interval_sec=_interval())
+        app._osint_append(out, f"Watch mode activé ({_interval()}s).", "ok")
+
+    def stop_watch() -> None:
+        app._network_observer_set_watch_state(False)
+        app._osint_append(out, "Watch mode arrêté.", "warn")
+
+    def set_baseline() -> None:
+        ok = app._network_observer_set_baseline()
+        app._osint_append(out, "Baseline VM enregistrée." if ok else "Baseline impossible (pas de snapshot).", "ok" if ok else "err")
+
+    def export_csv() -> None:
+        app._network_observer_export_csv(out)
+
+    def add_whitelist() -> None:
+        added = 0
+        for item in _split_ip_list():
+            if app._network_observer_set_list_entry("whitelist", item, add=True):
+                added += 1
+        app._osint_append(out, f"Whitelist: +{added}", "ok" if added else "warn")
+
+    def add_blacklist() -> None:
+        added = 0
+        for item in _split_ip_list():
+            if app._network_observer_set_list_entry("blacklist", item, add=True):
+                added += 1
+        app._osint_append(out, f"Blacklist: +{added}", "high" if added else "warn")
+
+    def clear_lists() -> None:
+        app._network_observer_state["whitelist"] = set()
+        app._network_observer_state["blacklist"] = set()
+        app._osint_append(out, "Whitelist/Blacklist vidées.", "warn")
+
+    def toggle_alerts() -> None:
+        app._network_observer_state["alerts_popup"] = bool(alerts_var.get())
+        app._osint_append(out, f"Alertes pop-up: {'ON' if alerts_var.get() else 'OFF'}", "dim")
+
+    row2 = tk.Frame(top, bg="#010810")
+    row2.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(8, 0))
+
+    btn_specs = [
+        ("▶ SNAPSHOT", launch_snapshot, "#003344", "#00e5ff"),
+        ("WATCH ON", start_watch, "#113a1f", "#8cffb0"),
+        ("WATCH OFF", stop_watch, "#3a1a1a", "#ff9aa8"),
+        ("SET BASELINE", set_baseline, "#2d2b14", "#ffe585"),
+        ("EXPORT CSV", export_csv, "#21334a", "#9ed5ff"),
+        ("+ WHITELIST", add_whitelist, "#183927", "#9fffc0"),
+        ("+ BLACKLIST", add_blacklist, "#3a1a1a", "#ffb0b0"),
+        ("CLEAR LISTS", clear_lists, "#2b2b2b", "#d6d6d6"),
+    ]
+    for idx, (txt, cmd, bg, fg) in enumerate(btn_specs):
+        tk.Button(
+            row2,
+            text=txt,
+            command=cmd,
+            bg=bg,
+            fg=fg,
+            activebackground="#00b8d9",
+            activeforeground="#010810",
+            font=("Consolas", 9, "bold"),
+            relief="flat",
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        ).grid(row=0, column=idx, padx=(0, 6), sticky="ew")
+
+    chk = tk.Checkbutton(
+        row2,
+        text="Pop-up nouvelles IP",
+        variable=alerts_var,
+        command=toggle_alerts,
+        bg="#010810",
+        fg="#ffcc88",
+        activebackground="#010810",
+        activeforeground="#ffcc88",
+        selectcolor="#010810",
+        font=("Consolas", 9, "bold"),
+    )
+    chk.grid(row=0, column=len(btn_specs), sticky="w")
+
+    app._add_osint_export_buttons(top, out)
+    target_entry.bind("<Return>", lambda _e: launch_snapshot())
 
 
 # AI-assisted OSINT tab builder.
@@ -287,6 +444,11 @@ def osint_auto_route(app: Any, query: str, out: Any) -> None:
     if domains and re.search(r"\b(synthetic|synth[eé]tique|test identity|identifiant de test|credential control)\b", lowered):
         app._osint_append(out, f"[SYNTHETIC CREDS] → {domains[0]}", "hdr")
         app._osint_run_synthetic_credential_controls(domains[0], out)
+        dispatched = True
+
+    if re.search(r"\b(network|reseau|réseau|connexion|connection|netstat|socket|observer|monitor)\b", lowered):
+        app._osint_append(out, "[NETWORK OBSERVER] → local", "hdr")
+        app._osint_run_network_observer("local", out)
         dispatched = True
 
     for pat in [

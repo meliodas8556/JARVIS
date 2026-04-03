@@ -831,6 +831,22 @@ class JarvisApp:
         self.pentest_scope_targets = self._normalize_pentest_scope_targets(self.config.get("pentest_scope_targets", []))
         self.force_image_pipeline = bool(self.config.get("force_image_pipeline", True))
         self.osint_panel_state: dict[str, Any] = {}
+        self._network_observer_state: dict[str, Any] = {
+            "watch_running": False,
+            "watch_interval_sec": 5,
+            "watch_after_id": None,
+            "watch_busy": False,
+            "watch_out": None,
+            "watch_target": "local",
+            "alerts_popup": True,
+            "known_ips": set(),
+            "baseline": None,
+            "last_snapshot": None,
+            "timeline": [],
+            "whitelist": set(),
+            "blacklist": set(),
+            "last_csv_export": "",
+        }
         self.osint_dns_live_mode = str(self.config.get("osint_dns_live_mode", "compact")).strip().lower()
         if self.osint_dns_live_mode not in {"off", "compact", "verbose"}:
             self.osint_dns_live_mode = "compact"
@@ -9617,6 +9633,466 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
             self._osint_append(out, "  Aucun port ouvert sur le top-20", "dim")
         self._osint_append(out, "\n◈ Analyse IP terminée.", "hdr")
 
+    # ── Network Observer (defensive, local metadata only) ─────────────────────
+    def _osint_run_network_observer(self, target: str, out: Any) -> None:
+        self._osint_update_report_context(out, "Network Observer", target or "local")
+        self._osint_append(out, "Mode defensif: observation locale des connexions (sans interception de paquets).", "warn")
+        snapshot = self._network_observer_collect_snapshot()
+        if not snapshot:
+            self._osint_append(out, "Impossible de recuperer les connexions reseau locales.", "err")
+            return
+        self._network_observer_render_snapshot(out, snapshot)
+
+    def _network_observer_collect_snapshot(self) -> dict[str, Any] | None:
+        commands: list[list[str]]
+        if os.name == "nt":
+            commands = [["netstat", "-ano"], ["netstat", "-an"]]
+        else:
+            commands = [["ss", "-tunap"], ["netstat", "-tunap"], ["netstat", "-an"]]
+
+        raw = ""
+        command_used = ""
+        for cmd in commands:
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=14)
+                output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+                if proc.returncode == 0 and output:
+                    raw = output
+                    command_used = " ".join(cmd)
+                    break
+            except Exception:
+                continue
+
+        if not raw:
+            return None
+
+        entries = self._network_observer_parse_entries(raw)
+        if not entries:
+            return None
+
+        state = self._network_observer_state
+        previous = state.get("last_snapshot")
+        summary = self._network_observer_build_summary(entries, previous)
+        snapshot = {
+            "taken_at": datetime.now().isoformat(timespec="seconds"),
+            "command": command_used,
+            "entries": entries,
+            "summary": summary,
+        }
+
+        state["last_snapshot"] = snapshot
+        timeline = state.setdefault("timeline", [])
+        timeline.append({
+            "ts": snapshot["taken_at"],
+            "total": summary.get("total_lines", 0),
+            "new": summary.get("new_connections", 0),
+            "closed": summary.get("closed_connections", 0),
+            "remote_count": len(summary.get("remote_counter", {})),
+        })
+        if len(timeline) > 80:
+            del timeline[:-80]
+
+        return snapshot
+
+    def _network_observer_parse_entries(self, raw: str) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        for line in raw.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            low = text.lower()
+            if low.startswith("proto") or low.startswith("active") or low.startswith("netid"):
+                continue
+
+            parts = re.split(r"\s+", text)
+            if not parts:
+                continue
+
+            proto = parts[0].lower()
+            if proto not in {"tcp", "tcp4", "tcp6", "udp", "udp4", "udp6"}:
+                continue
+
+            local_ep = ""
+            remote_ep = ""
+            state = ""
+            pid = ""
+            process = ""
+
+            if os.name == "nt":
+                if len(parts) >= 3:
+                    local_ep = parts[1]
+                    remote_ep = parts[2]
+                if proto.startswith("tcp") and len(parts) >= 4:
+                    state = parts[3]
+                if len(parts) >= 5:
+                    pid = parts[-1]
+            else:
+                if len(parts) >= 6 and parts[1].isalpha():
+                    state = parts[1]
+                    local_ep = parts[4]
+                    remote_ep = parts[5]
+                    if len(parts) >= 7:
+                        proc_blob = parts[6]
+                        m = re.search(r'pid=(\d+)', proc_blob)
+                        if m:
+                            pid = m.group(1)
+                        n = re.search(r'"([^"]+)"', proc_blob)
+                        if n:
+                            process = n.group(1)
+                elif len(parts) >= 5:
+                    local_ep = parts[3]
+                    remote_ep = parts[4]
+                    if len(parts) >= 6:
+                        state = parts[5]
+                    if len(parts) >= 7:
+                        pid = parts[-1]
+
+            if not local_ep or not remote_ep:
+                continue
+
+            entries.append({
+                "proto": proto,
+                "local": local_ep,
+                "remote": remote_ep,
+                "state": (state or "UNKNOWN").upper(),
+                "pid": pid,
+                "process": process,
+            })
+        return entries
+
+    def _network_observer_extract_host_port(self, endpoint: str) -> tuple[str, str]:
+        ep = (endpoint or "").strip()
+        if not ep:
+            return "", ""
+        if ep.startswith("[") and "]" in ep:
+            host = ep[1:].split("]", 1)[0]
+            tail = ep.split("]", 1)[1]
+            port = tail[1:] if tail.startswith(":") else ""
+        elif ":" in ep:
+            host, port = ep.rsplit(":", 1)
+        else:
+            host, port = ep, ""
+        host = host.strip().strip("[]")
+        if "%" in host:
+            host = host.split("%", 1)[0]
+        return host, port
+
+    def _network_observer_build_summary(self, entries: list[dict[str, str]], previous: dict[str, Any] | None) -> dict[str, Any]:
+        local_ignore = {"", "*", "0.0.0.0", "::", "::1", "127.0.0.1", "localhost"}
+        remote_counter: dict[str, int] = {}
+        state_counter: dict[str, int] = {}
+        proto_counter: dict[str, int] = {}
+        port_histogram: dict[str, int] = {}
+        remote_ports: dict[str, set[str]] = {}
+        pid_counter: dict[str, int] = {}
+        process_counter: dict[str, int] = {}
+        keys: set[str] = set()
+
+        for row in entries:
+            state = (row.get("state") or "UNKNOWN").upper()
+            proto = (row.get("proto") or "").lower()
+            state_counter[state] = state_counter.get(state, 0) + 1
+            proto_counter[proto] = proto_counter.get(proto, 0) + 1
+
+            remote_host, remote_port = self._network_observer_extract_host_port(row.get("remote", ""))
+            remote_host = remote_host.lower()
+            if remote_host not in local_ignore:
+                remote_counter[remote_host] = remote_counter.get(remote_host, 0) + 1
+                if remote_port:
+                    remote_ports.setdefault(remote_host, set()).add(remote_port)
+                    port_histogram[remote_port] = port_histogram.get(remote_port, 0) + 1
+
+            pid = str(row.get("pid") or "").strip()
+            if pid:
+                pid_counter[pid] = pid_counter.get(pid, 0) + 1
+            proc_name = str(row.get("process") or "").strip().lower()
+            if proc_name:
+                process_counter[proc_name] = process_counter.get(proc_name, 0) + 1
+
+            key = f"{proto}|{row.get('local','')}|{row.get('remote','')}|{state}|{pid}"
+            keys.add(key)
+
+        prev_keys = set(((previous or {}).get("summary") or {}).get("connection_keys", []))
+        new_connections = sorted(keys - prev_keys)
+        closed_connections = sorted(prev_keys - keys)
+
+        whitelist = set(str(x).strip().lower() for x in self._network_observer_state.get("whitelist", set()))
+        blacklist = set(str(x).strip().lower() for x in self._network_observer_state.get("blacklist", set()))
+        ip_scores: dict[str, dict[str, Any]] = {}
+
+        for host, count in remote_counter.items():
+            unique_ports = len(remote_ports.get(host, set()))
+            risk = count * 2 + unique_ports * 3
+            if host in blacklist:
+                risk += 40
+            if host in whitelist:
+                risk = max(0, risk - 30)
+            if unique_ports >= 15:
+                risk += 20
+
+            asn = ""
+            country = ""
+            if re.match(r"^\d+\.\d+\.\d+\.\d+$", host):
+                intel = self._rdap_lookup(host) or {}
+                asn = str(intel.get("asn") or "")
+                country = str(intel.get("country") or "")
+
+            ip_scores[host] = {
+                "risk": risk,
+                "count": count,
+                "ports": unique_ports,
+                "asn": asn,
+                "country": country,
+                "listed": "black" if host in blacklist else ("white" if host in whitelist else "none"),
+            }
+
+        return {
+            "total_lines": len(entries),
+            "state_counter": state_counter,
+            "proto_counter": proto_counter,
+            "port_histogram": port_histogram,
+            "remote_counter": remote_counter,
+            "remote_ports": {k: sorted(v) for k, v in remote_ports.items()},
+            "pid_counter": pid_counter,
+            "process_counter": process_counter,
+            "connection_keys": sorted(keys),
+            "new_connections": len(new_connections),
+            "closed_connections": len(closed_connections),
+            "new_connection_keys": new_connections[:80],
+            "closed_connection_keys": closed_connections[:80],
+            "ip_scores": ip_scores,
+        }
+
+    def _network_observer_render_snapshot(self, out: Any, snapshot: dict[str, Any]) -> None:
+        summary = snapshot.get("summary", {})
+        state = self._network_observer_state
+
+        self._osint_section(out, "SOURCE")
+        self._osint_append(out, f"Commande: {snapshot.get('command', 'n/a')}", "dim")
+        self._osint_append(out, f"Horodatage: {snapshot.get('taken_at', 'n/a')}", "dim")
+
+        self._osint_section(out, "RÉSUMÉ CONNEXIONS")
+        self._osint_append(out, f"  Total lignes: {summary.get('total_lines', 0)}", "val")
+        self._osint_append(out, f"  Nouvelles: {summary.get('new_connections', 0)}  |  Fermées: {summary.get('closed_connections', 0)}", "val")
+        sc = summary.get("state_counter", {})
+        if sc:
+            state_str = ", ".join(f"{k}:{v}" for k, v in sorted(sc.items(), key=lambda kv: kv[1], reverse=True)[:8])
+            self._osint_append(out, f"  Etats: {state_str}", "val")
+        pc = summary.get("proto_counter", {})
+        if pc:
+            proto_str = ", ".join(f"{k}:{v}" for k, v in sorted(pc.items(), key=lambda kv: kv[1], reverse=True))
+            self._osint_append(out, f"  Protocoles: {proto_str}", "val")
+
+        self._osint_section(out, "TOP IP DISTANTES + RISQUE")
+        ip_scores = summary.get("ip_scores", {})
+        if ip_scores:
+            ranked = sorted(ip_scores.items(), key=lambda kv: kv[1].get("risk", 0), reverse=True)
+            for host, data in ranked[:20]:
+                risk = int(data.get("risk", 0))
+                tag = "crit" if risk >= 70 else ("high" if risk >= 40 else ("warn" if risk >= 20 else "ok"))
+                asn = data.get("asn", "") or "n/a"
+                ctry = data.get("country", "") or "n/a"
+                listed = data.get("listed", "none")
+                self._osint_append(
+                    out,
+                    f"  {host:<39} risk={risk:<3} conn={data.get('count',0):<3} ports={data.get('ports',0):<3} asn={asn:<10} cc={ctry:<3} list={listed}",
+                    tag,
+                )
+        else:
+            self._osint_append(out, "  Aucune IP distante externe detectee.", "dim")
+
+        self._osint_section(out, "MAPPING PROCESS ↔ SOCKET")
+        pid_counter = summary.get("pid_counter", {})
+        process_counter = summary.get("process_counter", {})
+        if pid_counter:
+            for pid, count in sorted(pid_counter.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                self._osint_append(out, f"  PID {pid:<8} connexions={count}", "dim")
+        if process_counter:
+            for name, count in sorted(process_counter.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                self._osint_append(out, f"  Process {name:<24} connexions={count}", "dim")
+        if not pid_counter and not process_counter:
+            self._osint_append(out, "  Corrélation process indisponible sur ce snapshot.", "dim")
+
+        self._osint_section(out, "HISTOGRAMME PORTS DISTANTS")
+        port_hist = summary.get("port_histogram", {})
+        if port_hist:
+            for port, count in sorted(port_hist.items(), key=lambda kv: kv[1], reverse=True)[:15]:
+                bars = "#" * min(28, count)
+                self._osint_append(out, f"  {port:>5} | {bars} ({count})", "dim")
+        else:
+            self._osint_append(out, "  Aucun port distant exploitable.", "dim")
+
+        self._osint_section(out, "DELTA VS SNAPSHOT PRÉCÉDENT")
+        for item in summary.get("new_connection_keys", [])[:10]:
+            self._osint_append(out, f"  + {item}", "ok")
+        for item in summary.get("closed_connection_keys", [])[:10]:
+            self._osint_append(out, f"  - {item}", "warn")
+        if not summary.get("new_connection_keys") and not summary.get("closed_connection_keys"):
+            self._osint_append(out, "  Aucun changement détecté.", "dim")
+
+        self._osint_section(out, "TIMELINE")
+        for row in state.get("timeline", [])[-8:]:
+            self._osint_append(
+                out,
+                f"  {row.get('ts','?')}  total={row.get('total',0)} new={row.get('new',0)} closed={row.get('closed',0)} remotes={row.get('remote_count',0)}",
+                "dim",
+            )
+
+        baseline = state.get("baseline")
+        if baseline:
+            self._osint_section(out, "DELTA VS BASELINE VM")
+            base_keys = set(((baseline.get("summary") or {}).get("connection_keys", []))
+ )
+            current_keys = set(summary.get("connection_keys", []))
+            added_vs_base = len(current_keys - base_keys)
+            removed_vs_base = len(base_keys - current_keys)
+            self._osint_append(out, f"  Ajouts vs baseline: {added_vs_base}", "warn" if added_vs_base else "ok")
+            self._osint_append(out, f"  Retraits vs baseline: {removed_vs_base}", "dim")
+
+        known_ips: set[str] = state.setdefault("known_ips", set())
+        remotes_now = set(summary.get("remote_counter", {}).keys())
+        new_ips = sorted(remotes_now - known_ips)
+        if new_ips and state.get("alerts_popup", True):
+            try:
+                messagebox.showwarning(
+                    "JARVIS Network Observer",
+                    "Nouvelles IP détectées:\n" + "\n".join(new_ips[:12]),
+                    parent=self.root,
+                )
+            except Exception:
+                pass
+        known_ips.update(remotes_now)
+
+        self._osint_append(out, "\n◈ Network Observer termine.", "hdr")
+
+    def _network_observer_set_watch_state(self, enabled: bool, out: Any = None, interval_sec: int = 5) -> None:
+        state = self._network_observer_state
+        interval = max(2, int(interval_sec or 5))
+        state["watch_interval_sec"] = interval
+
+        if not enabled:
+            state["watch_running"] = False
+            state["watch_out"] = None
+            if state.get("watch_after_id"):
+                try:
+                    self.root.after_cancel(state["watch_after_id"])
+                except Exception:
+                    pass
+                state["watch_after_id"] = None
+            return
+
+        state["watch_running"] = True
+        state["watch_out"] = out
+        if out is not None:
+            report = getattr(out, "_osint_report", None)
+            if isinstance(report, dict):
+                state["watch_target"] = str(report.get("target", "local") or "local")
+        self._network_observer_tick()
+
+    def _network_observer_tick(self) -> None:
+        state = self._network_observer_state
+        if not state.get("watch_running"):
+            return
+        if state.get("watch_busy"):
+            state["watch_after_id"] = self.root.after(state.get("watch_interval_sec", 5) * 1000, self._network_observer_tick)
+            return
+
+        out = state.get("watch_out")
+        if out is None:
+            state["watch_running"] = False
+            return
+
+        state["watch_busy"] = True
+
+        def worker() -> None:
+            try:
+                snapshot = self._network_observer_collect_snapshot()
+                if snapshot:
+                    def render(s: dict[str, Any]) -> None:
+                        tgt = str(state.get("watch_target", "local") or "local")
+                        self._osint_start_output(out, "Network Observer", tgt, f"◈ NETWORK WATCH → {tgt}")
+                        self._network_observer_render_snapshot(out, s)
+                    self.root.after(0, lambda s=snapshot: render(s))
+            finally:
+                def finalize() -> None:
+                    state["watch_busy"] = False
+                    if state.get("watch_running"):
+                        state["watch_after_id"] = self.root.after(state.get("watch_interval_sec", 5) * 1000, self._network_observer_tick)
+                self.root.after(0, finalize)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _network_observer_set_baseline(self) -> bool:
+        snapshot = self._network_observer_collect_snapshot()
+        if not snapshot:
+            return False
+        self._network_observer_state["baseline"] = snapshot
+        return True
+
+    def _network_observer_export_csv(self, out: Any, path: str = "") -> str:
+        state = self._network_observer_state
+        snapshot = state.get("last_snapshot")
+        if not snapshot:
+            return ""
+
+        default_name = f"network_observer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        if not path:
+            path = filedialog.asksaveasfilename(
+                title="Exporter Network Observer (CSV)",
+                defaultextension=".csv",
+                initialfile=default_name,
+                filetypes=[("CSV", "*.csv")],
+            )
+        if not path:
+            return ""
+
+        try:
+            import csv as _csv
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                writer = _csv.writer(f)
+                writer.writerow(["taken_at", "proto", "state", "local", "remote", "remote_host", "remote_port", "pid", "process", "risk", "asn", "country", "list"])
+                scores = (snapshot.get("summary") or {}).get("ip_scores", {})
+                for row in snapshot.get("entries", []):
+                    host, port = self._network_observer_extract_host_port(row.get("remote", ""))
+                    host = host.lower()
+                    score = scores.get(host, {})
+                    writer.writerow([
+                        snapshot.get("taken_at", ""),
+                        row.get("proto", ""),
+                        row.get("state", ""),
+                        row.get("local", ""),
+                        row.get("remote", ""),
+                        host,
+                        port,
+                        row.get("pid", ""),
+                        row.get("process", ""),
+                        score.get("risk", ""),
+                        score.get("asn", ""),
+                        score.get("country", ""),
+                        score.get("listed", ""),
+                    ])
+            state["last_csv_export"] = path
+            self._osint_append(out, f"CSV exporté: {path}", "ok")
+            return path
+        except Exception as exc:
+            self._osint_append(out, f"Erreur export CSV: {exc}", "err")
+            return ""
+
+    def _network_observer_set_list_entry(self, list_name: str, value: str, add: bool = True) -> bool:
+        host = (value or "").strip().lower()
+        if not host:
+            return False
+        state = self._network_observer_state
+        bucket = state.get(list_name)
+        if not isinstance(bucket, set):
+            bucket = set()
+            state[list_name] = bucket
+        if add:
+            bucket.add(host)
+        else:
+            bucket.discard(host)
+        return True
+
     # ── Domain Analyzer ──────────────────────────────────────────────────────────
     def _osint_run_domain(self, domain: str, out: Any) -> None:
         domain = re.sub(r'^https?://', '', domain.lower().strip()).split("/")[0]
@@ -10215,6 +10691,9 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
 
     def _osint_run_dork(self, target: str, out: Any) -> None:
         _ui_osint_tools_tabs.osint_run_dork(self, target, out)
+
+    def _build_osint_network_observer_tab(self, parent: Any) -> None:
+        _ui_osint_tabs.build_osint_network_observer_tab(self, parent)
 
     # ── AI OSINT Tab ─────────────────────────────────────────────────────────────
     def _build_osint_ai_tab(self, parent: Any) -> None:
