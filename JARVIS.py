@@ -26,7 +26,6 @@ import time
 import traceback
 import webbrowser
 import ssl
-import importlib
 import io
 import unicodedata
 import urllib.parse
@@ -48,8 +47,15 @@ from email import encoders
 from email.utils import formataddr, formatdate, make_msgid
 from typing import Any
 
-# Ensure local helper modules are importable when launching the script directly.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Ensure local helper modules are importable both from source and frozen builds.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    bundle_dir = str(getattr(sys, "_MEIPASS", "") or "").strip()
+    if bundle_dir and bundle_dir not in sys.path:
+        sys.path.insert(0, bundle_dir)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -66,22 +72,25 @@ try:
 except Exception:
     pass  # Non bloquant : l'import fonctionne même sans .pyc
 
-_assistant_texts = importlib.import_module("jarvis_modules.assistant_texts")
+from jarvis_modules import assistant_texts as _assistant_texts
+from jarvis_modules import osint_console as _osint_console
+from jarvis_modules import osint_reporting as _osint_reporting
+from jarvis_modules import osint_runtime_helpers as _osint_runtime_helpers
+from jarvis_modules import perf_profile as _perf_profile
+from jarvis_modules import ui_netmap as _ui_netmap
+from jarvis_modules import ui_osint_tabs as _ui_osint_tabs
+from jarvis_modules import ui_osint_tools_tabs as _ui_osint_tools_tabs
+from jarvis_modules import ui_scope_audit as _ui_scope_audit
+from jarvis_modules.llm_client import OllamaClient
+
 CREATOR_NAME = _assistant_texts.CREATOR_NAME
 DEFAULT_PROFILES = _assistant_texts.DEFAULT_PROFILES
 ROAST_LINES = _assistant_texts.ROAST_LINES
 SYSTEM_PROMPT = _assistant_texts.SYSTEM_PROMPT
 
-OllamaClient = importlib.import_module("jarvis_modules.llm_client").OllamaClient
-build_runtime_intervals = importlib.import_module("jarvis_modules.perf_profile").build_runtime_intervals
-_osint_reporting = importlib.import_module("jarvis_modules.osint_reporting")
-_ui_scope_audit = importlib.import_module("jarvis_modules.ui_scope_audit")
-_ui_netmap = importlib.import_module("jarvis_modules.ui_netmap")
-_ui_osint_tabs = importlib.import_module("jarvis_modules.ui_osint_tabs")
-_ui_osint_tools_tabs = importlib.import_module("jarvis_modules.ui_osint_tools_tabs")
-_osint_runtime_helpers = importlib.import_module("jarvis_modules.osint_runtime_helpers")
-OSINTConsole = importlib.import_module("jarvis_modules.osint_console").OSINTConsole
-quick_osint = importlib.import_module("jarvis_modules.osint_console").quick_osint
+build_runtime_intervals = _perf_profile.build_runtime_intervals
+OSINTConsole = _osint_console.OSINTConsole
+quick_osint = _osint_console.quick_osint
 
 try:
     import tkinter as tk
