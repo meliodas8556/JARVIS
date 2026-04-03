@@ -26,6 +26,7 @@ import time
 import traceback
 import webbrowser
 import ssl
+import importlib
 import io
 import unicodedata
 import urllib.parse
@@ -58,6 +59,56 @@ else:
 
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
+
+
+def _auto_install_runtime_dependencies() -> None:
+    """Best-effort auto install of runtime deps when running from source."""
+    if getattr(sys, "frozen", False):
+        # Frozen builds already bundle dependencies.
+        return
+    if os.getenv("JARVIS_AUTO_INSTALL_DEPS", "1") != "1":
+        return
+
+    module_to_package = [
+        ("requests", "requests"),
+        ("dns", "dnspython"),
+        ("speech_recognition", "SpeechRecognition"),
+        ("pyttsx3", "pyttsx3"),
+        ("weasyprint", "weasyprint"),
+        ("PIL", "Pillow"),
+        ("qrcode", "qrcode"),
+        ("pyaudio", "pyaudio"),
+    ]
+
+    missing_packages: list[str] = []
+    for module_name, package_name in module_to_package:
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            missing_packages.append(package_name)
+
+    if not missing_packages:
+        return
+
+    seen: set[str] = set()
+    for package_name in missing_packages:
+        if package_name in seen:
+            continue
+        seen.add(package_name)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", package_name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=240,
+            )
+        except Exception:
+            # Continue to next package, no hard fail here.
+            pass
+
+
+_auto_install_runtime_dependencies()
 
 # Pre-compile jarvis_modules to avoid KeyboardInterrupt during _compile_bytecode
 # on first run when Python tries to write __pycache__ files.
