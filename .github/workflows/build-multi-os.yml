@@ -1,0 +1,74 @@
+name: Build JARVIS Multi-OS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Linux Tk dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Build locked binary
+        shell: bash
+        run: |
+          python build_release_locked.py "${{ github.repository_owner }}"
+
+      - name: Package Linux artifact
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tar -czf JARVIS-release-locked-linux.tar.gz -C release_locked .
+
+      - name: Package macOS artifact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          tar -czf JARVIS-release-locked-macos.tar.gz -C release_locked .
+
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release_locked\* -DestinationPath JARVIS-release-locked-windows.zip -Force
+
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-linux
+          path: JARVIS-release-locked-linux.tar.gz
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-macos
+          path: JARVIS-release-locked-macos.tar.gz
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-windows
+          path: JARVIS-release-locked-windows.zip
