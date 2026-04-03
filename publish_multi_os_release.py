@@ -200,14 +200,16 @@ def download_artifacts(run_id: str, dest: Path) -> list[Path]:
     _check(proc, "gh run download")
     print(f"[ARTIFACTS] Downloaded to {dest}")
 
-    # Collect the actual files (go one level deep inside each artifact folder)
+    # Collect actual files recursively because upload-artifact may preserve subdirectories.
     assets: list[Path] = []
     for item in sorted(dest.iterdir()):
         if item.is_dir():
-            for f in sorted(item.iterdir()):
-                if f.is_file():
-                    assets.append(f)
-                    print(f"[ARTIFACTS]   {f.name}")
+            for f in sorted(path for path in item.rglob("*") if path.is_file()):
+                assets.append(f)
+                print(f"[ARTIFACTS]   {f.relative_to(dest)}")
+        elif item.is_file():
+            assets.append(item)
+            print(f"[ARTIFACTS]   {item.name}")
     if not assets:
         raise RuntimeError(f"No artifact files found inside {dest}")
     return assets
