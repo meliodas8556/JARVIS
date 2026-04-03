@@ -126,12 +126,14 @@ def main() -> int:
     run(pyinstaller_cmd, env=env, cwd=root)
 
     exe_name = f"{app_name}.exe" if os.name == "nt" else app_name
+    build_output_path = out_dir / exe_name
     if os.name == "nt":
         built_dir = root / "dist" / app_name
         built_exe = built_dir / exe_name
         if not built_exe.exists():
             raise FileNotFoundError(f"Executable not found: {built_exe}")
         shutil.copytree(built_dir, out_dir, dirs_exist_ok=True)
+        build_output_path = out_dir
 
         launcher = out_dir / "LANCER_JARVIS.bat"
         launcher.write_text(
@@ -162,6 +164,7 @@ def main() -> int:
         target_exe = out_dir / exe_name
         shutil.copy2(built_exe, target_exe)
         target_exe.chmod(0o755)
+        build_output_path = target_exe
 
     release_info = out_dir / "RELEASE_INFO.txt"
     release_info.write_text(
@@ -184,7 +187,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    print(f"[OK] Build complete: {target_exe}")
+    print(f"[OK] Build complete: {build_output_path}")
     print(f"[OK] Release info: {release_info}")
     return 0
 
