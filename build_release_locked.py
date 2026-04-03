@@ -172,6 +172,7 @@ def main() -> int:
     if os.name == "nt":
         # onedir is larger but significantly more stable on Windows than onefile self-extraction.
         pyinstaller_cmd.insert(4, "--onedir")
+        pyinstaller_cmd.insert(5, "--noupx")
     else:
         pyinstaller_cmd.insert(4, "--onefile")
 

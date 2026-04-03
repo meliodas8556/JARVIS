@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import webbrowser
 import ssl
 import importlib
@@ -17596,13 +17597,58 @@ def main() -> None:
         print(f"Detail: {TK_IMPORT_ERROR}")
         print("Installe les bibliotheques Tk (ex: tk / python3-tk selon ta distro).")
         return
-    root = tk.Tk()
-    JarvisApp(root)
+
+    def _write_startup_crash_report(exc: Exception) -> str:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if os.name == "nt":
+            base = os.getenv("LOCALAPPDATA") or tempfile.gettempdir()
+            report_dir = os.path.join(base, "JARVIS", "crash_reports")
+        else:
+            report_dir = os.path.join(tempfile.gettempdir(), "jarvis_crash_reports")
+        os.makedirs(report_dir, exist_ok=True)
+        report_path = os.path.join(report_dir, f"jarvis_startup_crash_{ts}.log")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"JARVIS startup crash report - {datetime.now().isoformat()}\n")
+            f.write(f"Platform: {sys.platform}\n")
+            f.write(f"Python: {sys.version}\n")
+            f.write(f"Error: {exc!r}\n\n")
+            f.write(traceback.format_exc())
+        return report_path
+
+    root = None
     try:
+        root = tk.Tk()
+        JarvisApp(root)
         root.mainloop()
     except KeyboardInterrupt:
         try:
-            root.destroy()
+            if root is not None:
+                root.destroy()
+        except Exception:
+            pass
+    except Exception as exc:
+        report_path = ""
+        try:
+            report_path = _write_startup_crash_report(exc)
+        except Exception:
+            pass
+
+        message = (
+            "JARVIS a rencontre une erreur critique au demarrage.\n\n"
+            "Un rapport de crash a ete genere"
+            + (f" :\n{report_path}" if report_path else ".")
+            + "\n\nTransmets ce fichier au support JARVIS."
+        )
+        try:
+            if messagebox is not None:
+                messagebox.showerror("JARVIS - Crash demarrage", message)
+            else:
+                print(message)
+        except Exception:
+            print(message)
+        try:
+            if root is not None:
+                root.destroy()
         except Exception:
             pass
 
