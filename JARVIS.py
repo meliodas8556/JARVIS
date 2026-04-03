@@ -96,7 +96,20 @@ except Exception as exc:
     TK_AVAILABLE = False
     TK_IMPORT_ERROR = str(exc)
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "requests"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=150,
+        )
+    except Exception:
+        pass
+    import requests
 
 try:
     import pwd
@@ -148,7 +161,7 @@ JARVIS_RELEASE_MODE = bool(getattr(sys, "frozen", False) or os.getenv("JARVIS_RE
 JARVIS_RELEASE_OWNER = str(os.getenv("JARVIS_RELEASE_OWNER", "") or "").strip()
 JARVIS_RELEASE_SIGNATURE = str(os.getenv("JARVIS_RELEASE_SIGNATURE", "") or "").strip()
 JARVIS_UPDATE_MANIFEST_URL = str(os.getenv("JARVIS_UPDATE_MANIFEST_URL", "") or "").strip()
-JARVIS_UPDATE_REPO = str(os.getenv("JARVIS_UPDATE_REPO", "") or "").strip()
+JARVIS_UPDATE_REPO = str(os.getenv("JARVIS_UPDATE_REPO", "meliodas8556/JARVIS") or "meliodas8556/JARVIS").strip()
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 DEFAULT_MODEL = "qwen2.5"
@@ -9743,6 +9756,7 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
 
     # ── Email Intel ──────────────────────────────────────────────────────────────
     def _osint_run_email(self, email: str, out: Any) -> None:
+        email = (email or "").strip().lower()
         self._osint_section(out, "VALIDATION FORMAT")
         if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
             self._osint_append(out, "  Format: INVALIDE", "err")
@@ -9750,15 +9764,77 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
         self._osint_append(out, "  Format: VALIDE", "ok")
         local, domain = email.split("@", 1)
         self._osint_append(out, f"  Local: {local}  |  Domaine: {domain}", "val")
+        self._osint_section(out, "PROFIL ADRESSE")
+        role_accounts = {"admin", "support", "contact", "info", "billing", "abuse", "noc", "security", "help"}
+        if local in role_accounts:
+            self._osint_append(out, f"  Type: compte role ({local})", "warn")
+        else:
+            self._osint_append(out, "  Type: adresse personnelle/professionnelle", "ok")
+        self._osint_append(out, f"  Longueur local-part: {len(local)}", "dim")
         self._osint_section(out, "ENREGISTREMENTS MX")
         mx_vals, mx_src = self._osint_dns_lookup_records(domain, "MX", out, label="Email:MX", limit=6)
         mx = " | ".join(mx_vals)
         self._osint_append(out, f"  MX ({mx_src}): {mx[:200] if mx else '(aucun)'}", "ok" if mx else "warn")
+        mx_l = mx.lower()
+        provider = "Inconnu"
+        if "google" in mx_l or "googlemail" in mx_l:
+            provider = "Google Workspace"
+        elif "outlook" in mx_l or "protection.outlook" in mx_l or "microsoft" in mx_l:
+            provider = "Microsoft 365 / Exchange Online"
+        elif "zoho" in mx_l:
+            provider = "Zoho Mail"
+        elif "proton" in mx_l:
+            provider = "Proton Mail"
+        elif "yandex" in mx_l:
+            provider = "Yandex Mail"
+        if mx:
+            self._osint_append(out, f"  Fournisseur MX probable: {provider}", "val")
+        self._osint_section(out, "DNS COMPLEMENTAIRE")
+        a_vals, a_src = self._osint_dns_lookup_records(domain, "A", out, label="Email:A", limit=4)
+        aaaa_vals, aaaa_src = self._osint_dns_lookup_records(domain, "AAAA", out, label="Email:AAAA", limit=4)
+        self._osint_append(out, f"  A ({a_src}): {' | '.join(a_vals) if a_vals else '(absent)'}", "dim")
+        self._osint_append(out, f"  AAAA ({aaaa_src}): {' | '.join(aaaa_vals) if aaaa_vals else '(absent)'}", "dim")
         self._osint_section(out, "SPF / DMARC")
         for rtype, qname in [("SPF/TXT", domain), ("DMARC", f"_dmarc.{domain}")]:
             vals, src = self._osint_dns_lookup_records(qname, "TXT", out, label=f"Email:{rtype}", limit=6)
             v = " | ".join(vals)
             self._osint_append(out, f"  {rtype} ({src}): {v[:120] if v else '(absent)'}", "ok" if v else "warn")
+        self._osint_section(out, "DKIM (SELECTEURS COURANTS)")
+        selectors = ("default", "selector1", "selector2", "google", "k1")
+        found_dkim = 0
+        for selector in selectors:
+            qname = f"{selector}._domainkey.{domain}"
+            vals, src = self._osint_dns_lookup_records(qname, "TXT", out, label=f"Email:DKIM:{selector}", limit=3)
+            if vals:
+                found_dkim += 1
+                self._osint_append(out, f"  {selector:<10} ({src}) : présent", "ok")
+        if not found_dkim:
+            self._osint_append(out, "  Aucun DKIM trouvé sur les sélecteurs communs", "warn")
+        self._osint_section(out, "INTEL DOMAINE (RDAP)")
+        rdap = self._rdap_lookup(domain)
+        if rdap:
+            handle = str(rdap.get("handle") or rdap.get("ldhName") or "N/A")
+            status = ", ".join([str(s) for s in rdap.get("status", [])][:4]) if isinstance(rdap.get("status"), list) else str(rdap.get("status") or "N/A")
+            self._osint_append(out, f"  Handle: {handle}", "val")
+            self._osint_append(out, f"  Status: {status}", "dim")
+            events = rdap.get("events") if isinstance(rdap.get("events"), list) else []
+            created = ""
+            updated = ""
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                action = str(ev.get("eventAction") or "").lower()
+                date = str(ev.get("eventDate") or "")
+                if not created and ("registration" in action or "created" in action):
+                    created = date
+                if not updated and ("last changed" in action or "last update" in action or "updated" in action):
+                    updated = date
+            if created:
+                self._osint_append(out, f"  Création domaine: {created}", "val")
+            if updated:
+                self._osint_append(out, f"  Dernière mise à jour: {updated}", "dim")
+        else:
+            self._osint_append(out, "  RDAP indisponible", "warn")
         self._osint_section(out, "DOMAINE JETABLE")
         disposable = {
             "mailinator.com","guerrillamail.com","10minutemail.com","tempmail.com",
@@ -9770,13 +9846,66 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
             self._osint_append(out, f"  ⚠ DOMAINE JETABLE: {domain}", "err")
         else:
             self._osint_append(out, "  Domaine non répertorié comme jetable", "ok")
+        self._osint_section(out, "REPUTATION EMAIL (EMAILREP)")
+        enc_email = urllib.parse.quote(email)
+        emailrep = self._osint_http_request(
+            f"https://emailrep.io/{enc_email}",
+            timeout=10,
+            out=out,
+            evidence_label="Email:EmailRep",
+        )
+        if emailrep is not None and emailrep.ok:
+            try:
+                payload = emailrep.json()
+                reputation = str(payload.get("reputation") or "unknown")
+                suspicious = bool(payload.get("suspicious", False))
+                refs = payload.get("references")
+                refs_count = len(refs) if isinstance(refs, list) else int(payload.get("references_count") or 0)
+                self._osint_append(out, f"  Reputation : {reputation}", "ok" if reputation in ("high", "medium") else "warn")
+                self._osint_append(out, f"  Suspicious : {'oui' if suspicious else 'non'}", "err" if suspicious else "ok")
+                self._osint_append(out, f"  Références : {refs_count}", "dim")
+                details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+                for key, label in [
+                    ("credentials_leaked", "Cred leaks"),
+                    ("data_breach", "Data breach"),
+                    ("blacklisted", "Blacklist"),
+                    ("malicious_activity", "Malicious activity"),
+                    ("domain_exists", "Domain exists"),
+                    ("domain_reputation", "Domain reputation"),
+                    ("new_domain", "New domain"),
+                    ("days_since_domain_creation", "Days since domain creation"),
+                ]:
+                    if key in details:
+                        val = details.get(key)
+                        marker = "warn" if (key in {"credentials_leaked", "data_breach", "blacklisted", "malicious_activity"} and bool(val)) else "dim"
+                        self._osint_append(out, f"  {label:<26}: {val}", marker)
+            except Exception as exc:
+                self._osint_append(out, f"  EmailRep parse error: {exc}", "warn")
+        else:
+            self._osint_append(out, "  EmailRep indisponible (API/rate-limit)", "warn")
+        self._osint_section(out, "PRESENCE PUBLIQUE")
+        gravatar_hash = hashlib.md5(email.encode("utf-8", errors="ignore")).hexdigest()
+        gravatar_url = f"https://www.gravatar.com/avatar/{gravatar_hash}?d=404&s=80"
+        gravatar = self._osint_http_request(
+            gravatar_url,
+            timeout=6,
+            allow_redirects=False,
+            out=out,
+            evidence_label="Email:Gravatar",
+        )
+        if gravatar is not None and gravatar.status_code == 200:
+            self._osint_append(out, "  Gravatar: profil/avatar détecté", "warn")
+        else:
+            self._osint_append(out, "  Gravatar: non détecté", "dim")
         self._osint_section(out, "BREACH CHECK (HIBP)")
         self._osint_append(out, "  HIBP v3 requiert une clé API (abonnement).", "warn")
-        self._osint_append(out, f"  Vérification manuelle: https://haveibeenpwned.com/account/{urllib.parse.quote(email)}", "dim")
+        self._osint_append(out, f"  Vérification manuelle: https://haveibeenpwned.com/account/{enc_email}", "dim")
         self._osint_append(out, f"  BreachDirectory: https://breachdirectory.org/?q={urllib.parse.quote(local)}", "dim")
         self._osint_section(out, "RESSOURCES")
-        self._osint_append(out, f"  Hunter.io   : https://hunter.io/email-verifier/{urllib.parse.quote(email)}", "dim")
+        self._osint_append(out, f"  Hunter.io   : https://hunter.io/email-verifier/{enc_email}", "dim")
         self._osint_append(out, f"  EmailRep    : https://emailrep.io/{email}", "dim")
+        self._osint_append(out, f"  IntelX      : https://intelx.io/?s={enc_email}", "dim")
+        self._osint_append(out, f"  Epieos      : https://epieos.com/?q={enc_email}&t=email", "dim")
         self._osint_append(out, "\n◈ Analyse email terminée.", "hdr")
 
     # ── Credential Research ──────────────────────────────────────────────────────

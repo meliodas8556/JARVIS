@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import re
 import socket
+import subprocess
+import sys
 import threading
 import urllib.parse
 from typing import Any
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "requests"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except Exception:
+        pass
+    try:
+        import requests
+    except Exception:
+        requests = None
 import tkinter as tk
 
 
@@ -46,6 +64,10 @@ def build_osint_cred_research_tab(app: Any, parent: Any) -> None:
 
 def osint_run_cred_research(app: Any, username: str, domain: str, out: Any) -> None:
     email = f"{username}@{domain}"
+    if requests is None:
+        app._osint_append(out, "Le module Python 'requests' est requis pour Cred Research.", "err")
+        app._osint_append(out, f"Installe-le avec: {sys.executable} -m pip install requests", "warn")
+        return
     app._osint_section(out, "SCOPE & AUTORISATION")
     if app.pentest_mode_enabled:
         normalized = app._normalize_pentest_target(domain)

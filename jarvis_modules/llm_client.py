@@ -4,9 +4,27 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
 from typing import Any
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "requests"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except Exception:
+        pass
+    try:
+        import requests
+    except Exception:
+        requests = None
 
 
 class OllamaClient:
@@ -17,7 +35,7 @@ class OllamaClient:
         self.model = model
         self.low_resource_mode = bool(low_resource_mode)
         # Session HTTP re-utilisee pour eviter les couts de connexion repetes.
-        self._session = requests.Session()
+        self._session = requests.Session() if requests is not None else None
         # Cache court en memoire pour eviter de recalculer des prompts identiques.
         self._response_cache: dict[str, str] = {}
         self._response_cache_order: list[str] = []
@@ -30,6 +48,8 @@ class OllamaClient:
         self.low_resource_mode = bool(enabled)
 
     def check_connection(self) -> tuple[bool, str]:
+        if self._session is None:
+            return False, "Dependency 'requests' missing for Ollama HTTP client."
         try:
             res = self._session.get(self.tags_url, timeout=3)
             res.raise_for_status()
@@ -38,6 +58,8 @@ class OllamaClient:
             return False, str(exc)
 
     def list_models(self) -> list[str]:
+        if self._session is None:
+            return []
         try:
             res = self._session.get(self.tags_url, timeout=5)
             res.raise_for_status()
@@ -47,6 +69,8 @@ class OllamaClient:
             return []
 
     def generate(self, prompt: str) -> str:
+        if self._session is None:
+            raise RuntimeError("Dependency 'requests' missing. Install with: python -m pip install requests")
         prompt = str(prompt or "")
         cache_key = hashlib.sha1((self.model + "|" + prompt).encode("utf-8", errors="ignore")).hexdigest()
         cached = self._response_cache.get(cache_key)
