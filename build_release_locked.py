@@ -56,6 +56,58 @@ def bump_version_file(root: Path, owner: str) -> str:
     return new_version
 
 
+def write_windows_installer_script(root: Path, out_dir: Path, app_name: str, owner: str, version: str) -> Path:
+    installer_script = root / "JARVIS-windows-installer.iss"
+    output_dir = str(out_dir).replace("\\", "\\\\")
+    source_glob = str(out_dir / "*").replace("\\", "\\\\")
+    setup_text = "\n".join(
+        [
+            '#define MyAppName "JARVIS"',
+            f'#define MyAppVersion "{version}"',
+            f'#define MyAppPublisher "{owner}"',
+            f'#define MyAppExeName "{app_name}.exe"',
+            "",
+            "[Setup]",
+            "AppId={{7A892C77-95C4-4FD4-9D3A-4A7AA5C6620D}}",
+            "AppName={#MyAppName}",
+            "AppVersion={#MyAppVersion}",
+            "AppPublisher={#MyAppPublisher}",
+            "DefaultDirName={localappdata}\\Programs\\JARVIS",
+            "DefaultGroupName=JARVIS",
+            "UninstallDisplayIcon={app}\\{#MyAppExeName}",
+            "Compression=lzma2/max",
+            "SolidCompression=yes",
+            "WizardStyle=modern",
+            f"OutputDir={output_dir}",
+            "OutputBaseFilename=JARVIS-setup-windows",
+            "ArchitecturesAllowed=x64compatible",
+            "ArchitecturesInstallIn64BitMode=x64compatible",
+            "PrivilegesRequired=lowest",
+            "PrivilegesRequiredOverridesAllowed=dialog",
+            "SetupLogging=yes",
+            "",
+            "[Languages]",
+            'Name: "english"; MessagesFile: "compiler:Default.isl"',
+            "",
+            "[Tasks]",
+            'Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked',
+            "",
+            "[Files]",
+            f'Source: "{source_glob}"; DestDir: "{{app}}"; Flags: ignoreversion recursesubdirs createallsubdirs',
+            "",
+            "[Icons]",
+            'Name: "{group}\\JARVIS"; Filename: "{app}\\{#MyAppExeName}"; WorkingDir: "{app}"',
+            'Name: "{autodesktop}\\JARVIS"; Filename: "{app}\\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon',
+            "",
+            "[Run]",
+            'Filename: "{app}\\{#MyAppExeName}"; Description: "Launch JARVIS"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent',
+            "",
+        ]
+    )
+    installer_script.write_text(setup_text, encoding="utf-8")
+    return installer_script
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build locked JARVIS release executable (cross-platform).")
     parser.add_argument("owner_github", nargs="?", default="darkex", help="Owner GitHub username")
@@ -186,6 +238,10 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
+
+    if os.name == "nt":
+        installer_script = write_windows_installer_script(root, out_dir, app_name, owner, jarvis_version)
+        print(f"[OK] Windows installer script: {installer_script}")
 
     print(f"[OK] Build complete: {build_output_path}")
     print(f"[OK] Release info: {release_info}")

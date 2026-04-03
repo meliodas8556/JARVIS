@@ -34,6 +34,12 @@ jobs:
         run: |
           python build_release_locked.py "${{ github.repository_owner }}"
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
       - name: Package Linux artifact
         if: runner.os == 'Linux'
         shell: bash
@@ -50,6 +56,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" JARVIS-windows-installer.iss
           Compress-Archive -Path release_locked\* -DestinationPath JARVIS-release-locked-windows.zip -Force
 
       - name: Upload Linux artifact
@@ -71,4 +78,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jarvis-windows
-          path: JARVIS-release-locked-windows.zip
+          path: |
+            JARVIS-release-locked-windows.zip
+            release_locked/JARVIS-setup-windows.exe
