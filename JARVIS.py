@@ -171,7 +171,7 @@ JARVIS_RELEASE_MODE = bool(getattr(sys, "frozen", False) or os.getenv("JARVIS_RE
 JARVIS_RELEASE_OWNER = str(os.getenv("JARVIS_RELEASE_OWNER", "") or "").strip()
 JARVIS_RELEASE_SIGNATURE = str(os.getenv("JARVIS_RELEASE_SIGNATURE", "") or "").strip()
 JARVIS_UPDATE_MANIFEST_URL = str(os.getenv("JARVIS_UPDATE_MANIFEST_URL", "") or "").strip()
-JARVIS_UPDATE_REPO = str(os.getenv("JARVIS_UPDATE_REPO", "meliodas8556/JARVIS") or "meliodas8556/JARVIS").strip()
+JARVIS_UPDATE_REPO = str(os.getenv("JARVIS_UPDATE_REPO", "") or "").strip()
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 DEFAULT_MODEL = "qwen2.5"
@@ -710,9 +710,10 @@ class JarvisApp:
         configured_owner = str(self.config.get("owner_github", "") or "").strip()
         self.release_owner = configured_owner or JARVIS_RELEASE_OWNER
         self.release_signature = str(self.config.get("release_signature", "") or "").strip() or JARVIS_RELEASE_SIGNATURE
-        self.update_auto_check_enabled = bool(self.config.get("update_auto_check_enabled", True))
-        self.update_manifest_url = str(self.config.get("update_manifest_url", "") or JARVIS_UPDATE_MANIFEST_URL).strip()
-        self.update_repo = str(self.config.get("update_repo", "") or JARVIS_UPDATE_REPO).strip()
+        # Mise a jour distante GitHub desactivee: l'app reste locale/source-only.
+        self.update_auto_check_enabled = False
+        self.update_manifest_url = ""
+        self.update_repo = ""
         self._update_check_in_progress = False
         self._latest_update_info: dict[str, Any] | None = None
         self.memory = MemoryManager(MEMORY_DB_PATH)
@@ -888,7 +889,6 @@ class JarvisApp:
         self._show_boot_overlay()
         self._poll_worker_queue()
         self._start_auto_monitor()
-        self._schedule_startup_update_check()
         self.link_guard_enabled = True
         self.link_guard_right_click_only = True
         self.link_guard_screen_scan_persistent_enabled = True
@@ -1471,55 +1471,21 @@ class JarvisApp:
             self._update_check_in_progress = False
 
     def check_updates_now(self, silent: bool = False) -> None:
-        if self._update_check_in_progress:
-            if not silent:
-                self._append_terminal_output("[UPDATE] Verification deja en cours.", "term_header")
-            return
-        self._update_check_in_progress = True
-        threading.Thread(target=self._update_check_worker, args=(silent,), daemon=True).start()
+        if not silent:
+            self._append_terminal_output("[UPDATE] Fonction de mise a jour distante desactivee dans cette version.", "term_error")
 
     def _schedule_startup_update_check(self) -> None:
-        if not self.update_auto_check_enabled:
-            return
-        self.root.after(4500, lambda: self.check_updates_now(silent=True))
+        return
 
     def configure_update_channel_interactive(self) -> None:
-        if not self._assert_owner_action("configurer les mises a jour JARVIS"):
-            return
-        enabled = messagebox.askyesno(
-            "Mises a jour JARVIS",
-            "Activer la verification automatique des mises a jour au lancement ?",
-            parent=self.root,
-        )
-        self.update_auto_check_enabled = bool(enabled)
-        self.config["update_auto_check_enabled"] = self.update_auto_check_enabled
-
-        manifest = simpledialog.askstring(
-            "Canal mise a jour",
-            "URL manifeste JSON (optionnel, ex: https://.../jarvis-update.json)",
-            initialvalue=str(self.update_manifest_url or ""),
-            parent=self.root,
-        )
-        if manifest is not None:
-            self.update_manifest_url = str(manifest).strip()
-            self.config["update_manifest_url"] = self.update_manifest_url
-
-        repo = simpledialog.askstring(
-            "Canal mise a jour",
-            "Repo GitHub releases (optionnel, ex: owner/repo)",
-            initialvalue=str(self.update_repo or ""),
-            parent=self.root,
-        )
-        if repo is not None:
-            self.update_repo = str(repo).strip().strip("/")
-            self.config["update_repo"] = self.update_repo
-
+        self.update_auto_check_enabled = False
+        self.update_manifest_url = ""
+        self.update_repo = ""
+        self.config["update_auto_check_enabled"] = False
+        self.config["update_manifest_url"] = ""
+        self.config["update_repo"] = ""
         ConfigManager.save(self.config)
-        self._append_message(
-            "JARVIS",
-            "Canal de mise a jour enregistre. Les utilisateurs verront une proposition de mise a jour au lancement si une nouvelle version est detectee.",
-            "jarvis",
-        )
+        self._append_message("JARVIS", "Mise a jour distante desactivee pour cette version locale.", "jarvis")
 
     def _audit_feature_capabilities(self) -> list[dict[str, Any]]:
         """Audit des capacités de JARVIS pour donner un état clair des dépendances."""
@@ -11176,18 +11142,6 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
             self.run_cross_platform_compatibility_tests()
             return True
         if any(p in lowered for p in [
-            "configurer mise a jour jarvis", "configurer mises a jour jarvis", "canal update jarvis",
-            "configurer update jarvis", "parametres mise a jour jarvis",
-        ]):
-            self.configure_update_channel_interactive()
-            return True
-        if any(p in lowered for p in [
-            "verifier mise a jour jarvis", "check update jarvis", "check mises a jour",
-            "mise a jour jarvis maintenant",
-        ]):
-            self.check_updates_now(silent=False)
-            return True
-        if any(p in lowered for p in [
             "analyse resultat nuclei", "analyse résultats nuclei", "ouvre resultat nuclei",
             "ouvre résultats nuclei", "importe nuclei", "lire fichier nuclei", "rapport nuclei",
         ]):
@@ -11244,9 +11198,6 @@ Write-Host 'Terminé. Redémarre JARVIS puis lance: audit windows' -ForegroundCo
             return True
         if any(p in lowered for p in ["deban machine jarvis", "debannir machine jarvis", "unban machine jarvis"]):
             self._unban_machine_interactive()
-            return True
-        if any(p in lowered for p in ["definir github owner jarvis", "definir github proprietaire", "set owner github"]):
-            self._set_owner_github_interactive()
             return True
         # --- Reedit CV existant ---
         if any(p in lowered for p in ["modifier mon cv", "modifie mon cv", "reedit", "reedit cv", "modifier la candidature", "modifier ma candidature", "changer mon cv", "mettre a jour mon cv"]):
