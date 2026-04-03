@@ -1,0 +1,27 @@
+# JARVIS repository defaults
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Build artifacts
+build/
+dist/
+release_locked/
+*.spec
+
+# Virtual environments
+.venv/
+.jarvis_release_venv/
+
+# Local user/system data
+.cache/
+.config/
+.local/
+.vscode/
+Documents/
+Images/
+Projects/
+.jarvis_*.json
+.jarvis_*.db
