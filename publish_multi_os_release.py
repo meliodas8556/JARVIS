@@ -101,11 +101,14 @@ def bump_version(root: Path, owner: str) -> str:
 # ---------------------------------------------------------------------------
 
 def commit_and_push(root: Path, version: str) -> None:
-    status = _run(["git", "status", "--short"], root)
-    if not status.stdout.strip():
-        print("[GIT] Nothing to commit, pushing existing HEAD.")
+    # Safety: this repository may contain many unrelated tracked files.
+    # Only commit the version bump file produced by this release flow.
+    _run(["git", "add", "resources/version.json"], root, check=False)
+
+    staged = _run(["git", "diff", "--cached", "--name-only"], root)
+    if not (staged.stdout or "").strip():
+        print("[GIT] No staged release metadata changes; skipping commit.")
     else:
-        _check(_run(["git", "add", "-A"], root), "git add")
         msg = f"release: v{version} - multi-OS build"
         result = _run(["git", "commit", "-m", msg], root)
         stdout_stderr = (result.stdout + result.stderr).lower()
