@@ -22,61 +22,6 @@ def run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subproce
     return proc
 
 
-def ensure_gitignore_template(root: Path) -> None:
-    gitignore = root / ".gitignore"
-    if gitignore.exists():
-        return
-    template = """# JARVIS repository defaults
-.git/
-__pycache__/
-*.pyc
-*.pyo
-*.log
-
-# Build artifacts
-build/
-dist/
-release_locked/
-*.spec
-
-# Virtual environments
-.venv/
-.jarvis_release_venv/
-
-# Local user/system data
-.cache/
-.config/
-.local/
-.vscode/
-Documents/
-Images/
-Projects/
-.jarvis_*.json
-.jarvis_*.db
-"""
-    gitignore.write_text(template, encoding="utf-8")
-
-
-def project_stage_paths(root: Path) -> list[str]:
-    candidates = [
-        "JARVIS.py",
-        "jarvis_modules",
-        "resources",
-        "build_release_locked.py",
-        "build_release_locked.sh",
-        "build_release_locked.bat",
-        "publish_github_release.py",
-        "setup_github_release_oneclick.py",
-        "README.md",
-        ".gitignore",
-    ]
-    out: list[str] = []
-    for rel in candidates:
-        if (root / rel).exists():
-            out.append(rel)
-    return out
-
-
 def has_tool(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -145,18 +90,6 @@ def ensure_git_repo(root: Path, branch: str) -> None:
     run(["git", "checkout", "-B", branch], cwd=root)
 
 
-def ensure_git_identity(root: Path, git_name: str, git_email: str) -> None:
-    name_local = run(["git", "config", "--get", "user.name"], cwd=root, check=False)
-    email_local = run(["git", "config", "--get", "user.email"], cwd=root, check=False)
-    has_name = bool((name_local.stdout or "").strip())
-    has_email = bool((email_local.stdout or "").strip())
-
-    if not has_name:
-        run(["git", "config", "user.name", git_name], cwd=root)
-    if not has_email:
-        run(["git", "config", "user.email", git_email], cwd=root)
-
-
 def ensure_initial_commit(root: Path) -> None:
     has_commit = run(["git", "rev-parse", "--verify", "HEAD"], cwd=root, check=False)
     if has_commit.returncode == 0:
@@ -164,22 +97,8 @@ def ensure_initial_commit(root: Path) -> None:
         return
 
     print("[INFO] Création du commit initial...")
-    ensure_gitignore_template(root)
-    stage_paths = project_stage_paths(root)
-    if not stage_paths:
-        raise RuntimeError("Aucun fichier projet détecté à committer.")
-    run(["git", "add", "--", *stage_paths], cwd=root)
-
-    commit = run(["git", "commit", "-m", "chore: initial repository setup"], cwd=root, check=False)
-    if commit.returncode != 0:
-        stderr = (commit.stderr or "").lower()
-        if "user.email" in stderr or "user.name" in stderr:
-            raise RuntimeError(
-                "Git identity manquante. Configure d'abord:\n"
-                "git config --global user.name \"TonNom\"\n"
-                "git config --global user.email \"ton@email.com\""
-            )
-        raise RuntimeError((commit.stderr or commit.stdout or "git commit failed").strip())
+    run(["git", "add", "."], cwd=root)
+    run(["git", "commit", "-m", "chore: initial repository setup"], cwd=root)
 
 
 def ensure_remote(root: Path, repo: str) -> None:
@@ -247,24 +166,15 @@ def main() -> int:
     parser.add_argument("--branch", default="main", help="Branche principale à pousser")
     parser.add_argument("--public", action="store_true", help="Créer le repo en public (par défaut privé)")
     parser.add_argument("--skip-push", action="store_true", help="N'effectue pas de push")
-    parser.add_argument("--git-name", default="", help="Nom git à configurer localement si absent")
-    parser.add_argument("--git-email", default="", help="Email git à configurer localement si absent")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent
-
-    owner_hint = "darkex"
-    if args.repo and "/" in args.repo:
-        owner_hint = args.repo.split("/", 1)[0].strip() or owner_hint
-    git_name = args.git_name.strip() or owner_hint
-    git_email = args.git_email.strip() or f"{owner_hint}@users.noreply.github.com"
 
     if not has_tool("git"):
         raise RuntimeError("git introuvable. Installe git avant de continuer.")
 
     install_gh_if_missing()
     ensure_git_repo(root, args.branch)
-    ensure_git_identity(root, git_name, git_email)
     ensure_initial_commit(root)
     ensure_gh_auth()
 
