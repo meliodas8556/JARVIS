@@ -101,35 +101,66 @@ def main() -> int:
     add_data_1 = f"{root / 'resources'}{data_sep}resources"
     add_data_2 = f"{root / 'jarvis_modules'}{data_sep}jarvis_modules"
 
-    run(
-        [
-            str(py),
-            "-m",
-            "PyInstaller",
-            "--noconfirm",
-            "--clean",
-            "--onefile",
-            "--windowed",
-            "--name",
-            app_name,
-            "--add-data",
-            add_data_1,
-            "--add-data",
-            add_data_2,
-            str(root / "JARVIS.py"),
-        ],
-        env=env,
-        cwd=root,
-    )
+    pyinstaller_cmd = [
+        str(py),
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--windowed",
+        "--name",
+        app_name,
+        "--add-data",
+        add_data_1,
+        "--add-data",
+        add_data_2,
+        str(root / "JARVIS.py"),
+    ]
+
+    if os.name == "nt":
+        # onedir is larger but significantly more stable on Windows than onefile self-extraction.
+        pyinstaller_cmd.insert(4, "--onedir")
+    else:
+        pyinstaller_cmd.insert(4, "--onefile")
+
+    run(pyinstaller_cmd, env=env, cwd=root)
 
     exe_name = f"{app_name}.exe" if os.name == "nt" else app_name
-    built_exe = root / "dist" / exe_name
-    if not built_exe.exists():
-        raise FileNotFoundError(f"Executable not found: {built_exe}")
+    if os.name == "nt":
+        built_dir = root / "dist" / app_name
+        built_exe = built_dir / exe_name
+        if not built_exe.exists():
+            raise FileNotFoundError(f"Executable not found: {built_exe}")
+        shutil.copytree(built_dir, out_dir, dirs_exist_ok=True)
 
-    target_exe = out_dir / exe_name
-    shutil.copy2(built_exe, target_exe)
-    if os.name != "nt":
+        launcher = out_dir / "LANCER_JARVIS.bat"
+        launcher.write_text(
+            "@echo off\n"
+            "cd /d %~dp0\n"
+            f'start "" "{exe_name}"\n',
+            encoding="utf-8",
+        )
+
+        install_help = out_dir / "INSTALL_WINDOWS.txt"
+        install_help.write_text(
+            "JARVIS Windows - installation\r\n"
+            "================================\r\n"
+            "1. Extraire tout le contenu du fichier ZIP dans un dossier normal.\r\n"
+            "2. Ne pas lancer JARVIS directement depuis l'archive ZIP.\r\n"
+            "3. Ouvrir le dossier extrait.\r\n"
+            "4. Double-cliquer sur LANCER_JARVIS.bat.\r\n"
+            "5. Si Windows SmartScreen affiche un avertissement, cliquer sur Informations complementaires puis Executer quand meme.\r\n"
+            "\r\n"
+            "Cette version utilise un package onedir plus stable pour eviter les crashs lies a l'extraction onefile.\r\n",
+            encoding="utf-8",
+        )
+    else:
+        built_exe = root / "dist" / exe_name
+        if not built_exe.exists():
+            raise FileNotFoundError(f"Executable not found: {built_exe}")
+
+        target_exe = out_dir / exe_name
+        shutil.copy2(built_exe, target_exe)
         target_exe.chmod(0o755)
 
     release_info = out_dir / "RELEASE_INFO.txt"
@@ -147,6 +178,7 @@ def main() -> int:
                 "- Share only this release_locked folder.",
                 "- Do not share JARVIS.py or source tree.",
                 "- In release mode, dev/code-edit/plugin features are locked.",
+                "- On Windows: extract the ZIP first, then run LANCER_JARVIS.bat.",
             ]
         ),
         encoding="utf-8",
